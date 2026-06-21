@@ -1,0 +1,17 @@
+# Build output
+build/
+
+# CubeMX regenerated — don't commit these
+Drivers/
+Middlewares/
+startup_stm32f446xx.s
+
+# VS Code / IDE
+.vscode/
+.settings/
+.clangd
+*.code-workspace
+
+# CubeMX internal
+.mxproject
+mx.scratch
