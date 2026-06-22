@@ -153,9 +153,9 @@ Generated `Drivers/` and build output are excluded via `.gitignore`.
 - [x] `01_blink` - GPIO, clock config, HAL_GPIO_TogglePin
 - [X] `02_uart_echo` - USART2, DMA1 Stream5, circular RX
 - [X] `03_timers` - TIM6 IRQ rate, TIM2 OC toggle, TIM1/3/4 encoder mode
-- [ ] `04_encoder` - updateEncoders(), delta arithmetic, spike filter
-- [ ] `05_stepper_pulse` - setStepVelocity(), tick math, DIR pin
-- [ ] `06_full_port` - runZ_ISR(), runX_ISR(), closed-loop validation
+- [X] `04_encoder` - updateEncoders(), delta arithmetic, spike filter
+- [X] `05_stepper_pulse` - setStepVelocity(), tick math, DIR pin
+- [X] `06_full_port` - runZ_ISR(), runX_ISR(), closed-loop validation
 
 ---
 

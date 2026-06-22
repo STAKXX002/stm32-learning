@@ -267,13 +267,134 @@ when the 16-bit counter wraps from 65535 back to 0.
 
 ## Stage 04 - Encoder
 
-_Notes go here after completing 04_encoder._
+### What was built
+
+Three encoder timers (TIM1/3/4) reading absolute position and printing
+over UART every 500ms. No motor hardware needed - values sit at 0 with
+nothing connected, which is the correct baseline.
+
+### Absolute position tracking
+
+The hardware timer counter is only 16-bit (0–65535). For a motor that
+can spin many full rotations you need a 32-bit software accumulator.
+The pattern is: read the raw counter, compute the signed delta, add to
+the accumulator:
+
+```c
+uint16_t cur = (uint16_t)__HAL_TIM_GET_COUNTER(&htim1);
+encZ1 += (int16_t)(cur - prevZ1);  // int16_t cast handles wrap
+prevZ1 = cur;
+```
+
+The `int16_t` cast is the key - if the counter wraps from 65535 to 2,
+the raw difference is `2 - 65535 = -65533` as uint16, but cast to
+int16_t it becomes `+3` (correct forward movement of 3 counts).
+
+### Blocking vs DMA UART transmit
+
+In this stage `HAL_UART_Transmit()` is used directly (blocking) rather
+than DMA. This is fine here because the loop runs at 500ms - plenty of
+time to wait for a short string to transmit. In the full port the
+control loop runs at 10 kHz so blocking transmit inside the ISR would
+be catastrophic - that's why DMA is used there.
+
+### CubeMX settings
+
+- TIM1, TIM3, TIM4 → Combined Channels: Encoder Mode TI12, Period: 65535
+- USART2 → Asynchronous, 115200 (no DMA needed for slow polling prints)
+- No TIM2, no TIM6 - not needed for encoder reading alone
+
+### Printing with snprintf
+
+```c
+char uartBuf[64];
+int len = snprintf(uartBuf, sizeof(uartBuf),
+    "Z1:%ld  Z2:%ld  X:%ld\r\n", encZ1, encZ2, encX);
+HAL_UART_Transmit(&huart2, (uint8_t*)uartBuf, len, 100);
+```
+
+`snprintf` is safer than `sprintf` - the `sizeof(uartBuf)` argument
+prevents buffer overflow if the numbers get large.
 
 ---
 
 ## Stage 05 - Stepper Pulse
 
-_Notes go here after completing 05_stepper_pulse._
+### What was built
+
+TIM2 Output Compare generating step pulses on 3 channels at a
+configurable velocity, with a step counter printed over UART every
+500ms. Verified at 500 steps/sec - counter climbs by ~500 per second.
+
+### setStepVelocity()
+
+The key helper function that translates a desired speed into a TIM2
+compare interval:
+
+```c
+void setStepVelocity(TIM_HandleTypeDef *htim, uint32_t channel,
+                     uint32_t *interval, float stepsPerSec)
+{
+    if (stepsPerSec < 1.0f)
+    {
+        // Stop - disable the channel interrupt
+        __HAL_TIM_DISABLE_IT(...);
+        *interval = 0;
+        return;
+    }
+    *interval = (uint32_t)(TIM2_CLOCK / stepsPerSec);
+    __HAL_TIM_SET_COMPARE(htim, channel,
+        __HAL_TIM_GET_COUNTER(htim) + *interval);
+    __HAL_TIM_ENABLE_IT(...);
+}
+```
+
+- To stop: disable the channel interrupt, interval = 0
+- To run: compute interval, schedule first compare, enable interrupt
+- Speed change: just call setStepVelocity() again with new speed
+
+### The OC callback loop
+
+Every time TIM2 fires an OC interrupt, the callback advances the next
+compare target by the current interval:
+
+```c
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
+    {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1,
+            __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_1) + intervalZ1);
+        stepsZ1++;
+    }
+    // same for CH2 (Z2) and CH3 (X)
+}
+```
+
+This creates a self-sustaining pulse train - each interrupt schedules
+the next one. To change speed mid-motion, just update the interval
+variable and the next interrupt picks it up automatically.
+
+### Interval math
+
+```
+TIM2 clock = 90 MHz
+interval = 90,000,000 / steps_per_sec
+
+500  steps/sec → interval = 180,000 ticks
+1000 steps/sec → interval = 90,000  ticks
+2000 steps/sec → interval = 45,000  ticks
+```
+
+Minimum reliable interval is around 900 ticks (100,000 steps/sec) -
+below that the ISR overhead starts to matter.
+
+### Connection to the full port
+
+In `06_full_port`, `setStepVelocity()` is called from inside the TIM6
+10 kHz ISR with the PD controller output as the speed argument. The
+three channels run independently so Z1, Z2, and X can all move at
+different speeds simultaneously.
 
 ---
 
