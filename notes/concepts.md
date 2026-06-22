@@ -78,7 +78,83 @@ This matters later for TIM2 step generation and TIM6 ISR rate calculations.
 
 ## Stage 02 - UART Echo
 
-_Notes go here after completing 02_uart_echo._
+### What was built
+
+USART2 receiving bytes via DMA circular buffer in the background, echoing
+them back over TX. This is the exact same receive mechanism used in the full
+port to handle commands like `Z100` or `SEQ Z10,G20`.
+
+### Why DMA circular buffer - not blocking reads
+
+On ESP32, `Serial.readStringUntil('\n')` blocks - the CPU waits for bytes.
+In a control system with a 10 kHz ISR that's not possible. DMA solves this:
+
+> Tell the DMA engine once - "put every incoming USART2 byte into `rxBuffer`,
+> wrap around forever" - then the CPU never touches UART again. Bytes arrive
+> silently in the background while the control loop keeps running.
+
+### How the read pointer works
+
+`__HAL_DMA_GET_COUNTER()` returns how many slots remain in the buffer.
+Subtracting from the total size gives the current DMA write position:
+
+```c
+newPos = RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(huart2.hdmarx);
+```
+
+`oldPos` tracks where you last read up to. Anything between `oldPos` and
+`newPos` is new unprocessed data:
+
+```
+rxBuffer = [ h, e, l, l, o, _, _, _, _, _ ]
+                  ↑           ↑
+               oldPos       newPos
+                  [  new data  ]
+```
+
+### The wrap-around case
+
+When DMA reaches the end of the buffer it wraps back to position 0.
+`newPos` ends up less than `oldPos` - read in two chunks:
+
+```
+rxBuffer = [ w, h, a, t, o, h, e, l, l, o ]
+               ↑              ↑
+            newPos          oldPos
+     [new]                  [new]
+```
+
+```c
+if (newPos > oldPos)
+{
+    // single chunk
+    memcpy(txBuffer, rxBuffer + oldPos, newPos - oldPos);
+    HAL_UART_Transmit(&huart2, txBuffer, newPos - oldPos, 100);
+}
+else
+{
+    // two chunks - end of buffer + start of buffer
+    memcpy(txBuffer, rxBuffer + oldPos, RX_BUFFER_SIZE - oldPos);
+    HAL_UART_Transmit(&huart2, txBuffer, RX_BUFFER_SIZE - oldPos, 100);
+    memcpy(txBuffer, rxBuffer, newPos);
+    HAL_UART_Transmit(&huart2, txBuffer, newPos, 100);
+}
+oldPos = newPos;
+```
+
+### CubeMX settings for DMA UART
+
+- USART2 → Mode: `Asynchronous`, Baud: `115200`
+- DMA Settings tab → Add `USART2_RX` → Mode: `Circular`
+- DMA Settings tab → Add `USART2_TX` → Mode: `Normal`
+- NVIC Settings tab → enable `USART2 global interrupt`
+- Start DMA before the main loop: `HAL_UART_Receive_DMA(&huart2, rxBuffer, RX_BUFFER_SIZE)`
+
+### Connection to the full port
+
+In `06_full_port`, `handleSerial()` uses this exact same pattern -
+`newPos`/`oldPos` diff - but instead of echoing, it parses the buffer
+for command strings and dispatches them to the motion controller.
 
 ---
 
