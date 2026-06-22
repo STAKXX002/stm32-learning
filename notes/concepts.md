@@ -121,7 +121,7 @@ When DMA reaches the end of the buffer it wraps back to position 0.
 rxBuffer = [ w, h, a, t, o, h, e, l, l, o ]
                ↑              ↑
             newPos          oldPos
-     [new]                  [new]
+[chunk 2 →]               [← chunk 1      ]
 ```
 
 ```c
