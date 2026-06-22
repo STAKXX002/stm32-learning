@@ -160,7 +160,108 @@ for command strings and dispatches them to the motion controller.
 
 ## Stage 03 - Timers
 
-_Notes go here after completing 03_timers._
+### The three timer roles
+
+The full port uses four timers simultaneously, each with a completely different job:
+
+| Timer | Mode | Job |
+|---|---|---|
+| TIM6 | Base timer + ISR | Control loop - fires at 10 kHz, runs PD math |
+| TIM2 | Output Compare | Step pulse generator - toggles STEP pins at target frequency |
+| TIM1 / TIM3 / TIM4 | Encoder mode | Read quadrature encoder edges from motor shafts |
+
+These are independent - TIM6 does not affect TIM2, TIM2 does not affect encoders.
+
+### TIM6 - 10 kHz control loop
+
+TIM6 is a basic timer with no output pins. It just counts up and fires an interrupt
+when it overflows. Prescaler and Period are chosen to hit exactly 10 kHz:
+
+```
+TIM6 clock = 90 MHz (APB1 timer clock)
+Prescaler = 89  →  90 MHz / 90 = 1 MHz tick
+Period = 99     →  1 MHz / 100 = 10 000 Hz
+```
+
+The ISR callback fires 10,000 times per second:
+
+```c
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM6)
+    {
+        isrCount++; // runs 10,000x per second
+    }
+}
+```
+
+In the full port, this is where the PD control math runs - reading encoders,
+computing error, and updating step velocity every 100 µs.
+
+### TIM2 - Output Compare step pulse generation
+
+TIM2 has a free-running 32-bit counter at 90 MHz. A compare register holds a
+target value. When the counter reaches the target, hardware **automatically toggles
+the STEP pin** - no CPU needed. It then fires an interrupt so you can set the next
+target:
+
+```c
+// Advance target by one interval - schedules the next toggle
+__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1,
+    __HAL_TIM_GET_COMPARE(&htim2, TIM_CHANNEL_1) + stepInterval);
+```
+
+Speed control is just changing `stepInterval`:
+
+```
+stepInterval = 90,000,000 / desired_steps_per_second
+```
+
+Example: 500 steps/sec → stepInterval = 180,000
+
+Three channels on TIM2 drive three motors independently (Z1, Z2, X) - all from
+the same free-running counter, each with its own compare register and interval.
+
+### TIM1/3/4 - Encoder mode
+
+These timers are completely passive - the hardware counts quadrature A/B edges
+coming from the physical encoder on each motor shaft. No ISR, no compare register.
+Just read the counter whenever you need position:
+
+```c
+uint16_t cur = (uint16_t)__HAL_TIM_GET_COUNTER(&htim1);
+int16_t delta = (int16_t)(cur - prev); // cast handles 16-bit wrap
+encZ1 += delta;
+prev = cur;
+```
+
+The cast to `int16_t` is important - it recovers the correct signed delta even
+when the 16-bit counter wraps from 65535 back to 0.
+
+### CubeMX settings summary
+
+**TIM6:**
+- Mode: Activated
+- Prescaler: `89`, Period: `99`, Auto-reload: Enable
+- NVIC: enable TIM6 global interrupt
+
+**TIM2:**
+- Clock Source: Internal Clock
+- CH1/2/3: Output Compare No Output
+- Prescaler: `0`, Period: `4294967295` (32-bit max)
+- NVIC: enable TIM2 global interrupt
+
+**TIM1/3/4:**
+- Combined Channels: Encoder Mode
+- Encoder Mode: TI12
+- Period: `65535`
+
+### Verifying in the debugger
+
+- Add `isrCount` to watch - pause execution after ~1 second, value should be ~10,000
+- `encZ1/Z2/X` sit at 0 with nothing connected - correct
+- Live watch doesn't update while running over SWD - pause to read values
+  (live updates require ITM/SWO, a separate debug channel)
 
 ---
 
