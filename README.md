@@ -151,7 +151,7 @@ Generated `Drivers/` and build output are excluded via `.gitignore`.
 ## Progress
 
 - [x] `01_blink` - GPIO, clock config, HAL_GPIO_TogglePin
-- [ ] `02_uart_echo` - USART2, DMA1 Stream5, circular RX
+- [X] `02_uart_echo` - USART2, DMA1 Stream5, circular RX
 - [ ] `03_timers` - TIM6 IRQ rate, TIM2 OC toggle, TIM1/3/4 encoder mode
 - [ ] `04_encoder` - updateEncoders(), delta arithmetic, spike filter
 - [ ] `05_stepper_pulse` - setStepVelocity(), tick math, DIR pin
