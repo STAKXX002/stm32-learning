@@ -400,4 +400,94 @@ different speeds simultaneously.
 
 ## Stage 06 - Full Port
 
-_Notes go here after completing 06_full_port._
+### What was built
+
+Complete port of the ESP32 dual-axis stepper swap controller to STM32F446RE.
+All five previous stages combined into one working application:
+
+- TIM6 10 kHz ISR running PD control loop
+- TIM2 OC generating step pulses on Z1, Z2, X simultaneously
+- TIM1/3/4 reading quadrature encoders
+- USART2 DMA circular buffer receiving commands
+- Serial command parser handling Z, G, SEQ, R, STATUS
+
+### Systematic debug process
+
+When STATUS returned nothing, the fault was isolated step by step:
+
+1. Comment out everything, send BOOT OK after init → confirmed UART TX works
+2. Add encoders → ENC OK confirmed TIM1/3/4 start fine
+3. Add TIM6 → TIM6 OK confirmed 10 kHz ISR starts fine
+4. Add DMA RX → DMA OK confirmed circular buffer armed
+5. Add TIM2 OC → TIM2 OK confirmed step pulse timer starts fine
+6. Re-enable main loop → STATUS still not responding
+7. Added raw byte echo inside handleSerial() → saw characters arriving
+8. Conclusion: line ending missing from serial monitor - set to CR+LF
+
+This pattern - add one piece at a time, print a message after each - is the
+standard way to debug STM32 startup issues.
+
+### Key fixes from original port
+
+**1. HAL_TIM_OC_Start → HAL_TIM_OC_Start_IT**
+
+Original code used HAL_TIM_OC_Start() which starts output compare but does
+not enable the interrupt. Without the interrupt, setStepVelocity() schedules
+one compare event but nothing ever advances it - motor would move one step
+and stop. Fixed to HAL_TIM_OC_Start_IT().
+
+**2. Missing HAL_TIM_OC_DelayElapsedCallback**
+
+The OC callback that advances the compare register each tick was missing
+entirely. Without it the step pulse train never self-sustains.
+
+**3. Float printf support**
+
+snprintf with %.2f produces empty output on ARM GCC by default - float
+support is stripped to save flash. Fixed by adding to CMakeLists.txt:
+
+```cmake
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -u_printf_float
+)
+```
+
+**4. EN pins initialise HIGH**
+
+TB6600 stepper drivers are enabled active LOW. CubeMX defaults GPIO outputs
+to LOW at boot - drivers were enabled before any command was sent. Fixed by
+setting EN pins initial output level to HIGH in CubeMX so drivers start
+disabled.
+
+**5. TIM2 OC mode → Toggle**
+
+CubeMX defaulted TIM2 channels to TIMING mode which fires the interrupt
+but does NOT toggle the pin. Changed to TOGGLE mode so hardware toggles
+PA5/PB3/PB10 automatically.
+
+### Architecture summary
+
+```
+USART2 DMA RX          TIM6 ISR (10 kHz)
+     ↓                      ↓
+handleSerial()         updateEncoders()
+     ↓                      ↓
+executeCommand()        runZ_ISR() / runX_ISR()
+     ↓                      ↓
+sets target            PD math → setStepVelocity()
+                               ↓
+                        TIM2 OC callback
+                               ↓
+                       toggles PA5/PB3/PB10
+```
+
+Main loop only handles: serial parsing, sequence runner, debug prints.
+All timing-critical work happens in ISR context.
+
+### What remains for hardware validation
+
+- Connect TB6600 drivers and verify EN/DIR/PUL wiring
+- Connect encoders to TIM1/3/4 input pins
+- Send Z10 and verify motor moves to 10mm position
+- Tune Kp/Kd if oscillation or overshoot observed
+- Test SEQ command with full swap cycle
